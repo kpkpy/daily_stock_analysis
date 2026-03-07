@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 💬 讨论区
+    url: https://github.com/ZhuLinsen/daily_stock_analysis/discussions
+    about: 有问题想讨论？欢迎来讨论区交流
+  - name: 📖 使用文档
+    url: https://github.com/ZhuLinsen/daily_stock_analysis#-快速开始
+    about: 查看 README 获取使用帮助
