@@ -11,6 +11,7 @@ A股自选股智能分析系统 - 搜索服务模块
 4. 搜索结果缓存和格式化
 """
 
+import json
 import logging
 import random
 import time
@@ -957,7 +958,7 @@ class DashScopeWebSearchProvider(BaseSearchProvider):
     def _do_search(
         self, query: str, api_key: str, max_results: int, days: int = 7
     ) -> SearchResponse:
-        """执行 DashScope WebSearch 搜索"""
+        """执行 DashScope WebSearch MCP 搜索"""
         try:
             headers = {
                 "Authorization": f"Bearer {api_key}",
@@ -965,12 +966,20 @@ class DashScopeWebSearchProvider(BaseSearchProvider):
             }
 
             payload = {
-                "query": query,
-                "count": min(max_results, 10),
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "bailian_web_search",
+                    "arguments": {
+                        "query": query,
+                        "count": min(max_results, 10),
+                    },
+                },
             }
 
             response = _post_with_retry(
-                self.API_ENDPOINT, headers=headers, json=payload, timeout=15
+                self.API_ENDPOINT, headers=headers, json=payload, timeout=30
             )
 
             if response.status_code != 200:
@@ -995,6 +1004,21 @@ class DashScopeWebSearchProvider(BaseSearchProvider):
                     provider=self.name,
                     success=False,
                     error_message=error_msg,
+                )
+
+            if data.get("result", {}).get("isError"):
+                error_content = (
+                    data.get("result", {})
+                    .get("content", [{}])[0]
+                    .get("text", "Unknown error")
+                )
+                logger.warning(f"[DashScope] Search error: {error_content}")
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=False,
+                    error_message=error_content,
                 )
 
             logger.info(f"[DashScope] Search completed, query='{query}'")
@@ -1023,34 +1047,30 @@ class DashScopeWebSearchProvider(BaseSearchProvider):
     def _parse_results(
         self, data: Dict[str, Any], max_results: int
     ) -> List[SearchResult]:
-        """Parse DashScope WebSearch response"""
+        """Parse DashScope WebSearch MCP response"""
         results = []
 
-        search_results = (
-            data.get("results", [])
-            or data.get("data", [])
-            or data.get("webPages", {}).get("value", [])
-        )
+        content_list = data.get("result", {}).get("content", [])
+        if not content_list:
+            return results
 
-        for item in search_results[:max_results]:
-            title = item.get("title", "") or item.get("name", "")
-            snippet = (
-                item.get("snippet", "")
-                or item.get("content", "")
-                or item.get("description", "")
-            )
-            url = (
-                item.get("url", "")
-                or item.get("link", "")
-                or item.get("displayUrl", "")
-            )
+        content_text = content_list[0].get("text", "{}")
+        try:
+            search_data = json.loads(content_text)
+        except json.JSONDecodeError:
+            logger.error(f"[DashScope] Failed to parse content text as JSON")
+            return results
+
+        pages = search_data.get("pages", [])
+        for item in pages[:max_results]:
+            title = item.get("title", "")
+            snippet = item.get("snippet", "")
+            url = item.get("url", "")
             source = (
-                self._extract_domain(url) if url else item.get("source", "未知来源")
+                self._extract_domain(url) if url else item.get("hostname", "未知来源")
             )
-            published_date = (
-                item.get("datePublished", "")
-                or item.get("published_date", "")
-                or item.get("dateLastCrawled", "")
+            published_date = item.get("datePublished", "") or item.get(
+                "publish_date", ""
             )
 
             if snippet:
@@ -1073,16 +1093,18 @@ class DashScopeWebSearchProvider(BaseSearchProvider):
         try:
             if response.headers.get("content-type", "").startswith("application/json"):
                 error_data = response.json()
-                if "message" in error_data:
-                    return error_data["message"]
                 if "error" in error_data:
                     return error_data["error"]
-                if "code" in error_data:
-                    return f"Code: {error_data['code']}, Message: {error_data.get('message', 'Unknown')}"
+                if "result" in error_data and error_data["result"].get("isError"):
+                    content = error_data["result"].get("content", [{}])
+                    if content:
+                        return content[0].get("text", "Unknown error")
                 return str(error_data)
-            return response.text[:200]
+            return (
+                response.text[:200] if response.text else f"HTTP {response.status_code}"
+            )
         except Exception:
-            return f"HTTP {response.status_code}: {response.text[:200]}"
+            return f"HTTP {response.status_code}: {response.text[:200] if response.text else ''}"
 
     @staticmethod
     def _extract_domain(url: str) -> str:
