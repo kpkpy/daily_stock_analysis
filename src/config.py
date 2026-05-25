@@ -71,6 +71,11 @@ class Config:
     # === 自选股配置 ===
     stock_list: List[str] = field(default_factory=list)
 
+    # === 盘前选股配置 ===
+    candidate_pool: List[str] = field(default_factory=list)  # 候选股票池
+    selection_top_n: int = 10  # 每天选出数量
+    selection_strategies: List[str] = field(default_factory=lambda: ["technical"])  # 选股策略
+
     # === 飞书云文档配置 ===
     feishu_app_id: Optional[str] = None
     feishu_app_secret: Optional[str] = None
@@ -426,6 +431,23 @@ class Config:
         if not stock_list:
             stock_list = ["600519", "000001", "300750"]
 
+        # 解析候选股票池（用于盘前选股）
+        candidate_pool_str = os.getenv("CANDIDATE_POOL", "")
+        candidate_pool = [
+            (c or "").strip().upper()
+            for c in candidate_pool_str.split(",")
+            if (c or "").strip()
+        ]
+
+        # 选股配置
+        selection_top_n = int(os.getenv("SELECTION_TOP_N", "10"))
+        selection_strategies_str = os.getenv("SELECTION_STRATEGIES", "technical")
+        selection_strategies = [
+            s.strip().lower()
+            for s in selection_strategies_str.split(",")
+            if s.strip()
+        ]
+
         # === LiteLLM multi-key parsing ===
         # GEMINI_API_KEYS (comma-separated) > GEMINI_API_KEY (single)
         _gemini_keys_raw = os.getenv("GEMINI_API_KEYS", "")
@@ -588,6 +610,9 @@ class Config:
 
         return cls(
             stock_list=stock_list,
+            candidate_pool=candidate_pool,
+            selection_top_n=selection_top_n,
+            selection_strategies=selection_strategies,
             feishu_app_id=os.getenv("FEISHU_APP_ID"),
             feishu_app_secret=os.getenv("FEISHU_APP_SECRET"),
             feishu_folder_token=os.getenv("FEISHU_FOLDER_TOKEN"),

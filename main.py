@@ -54,6 +54,7 @@ from src.core.market_review import run_market_review
 from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
 from src.logging_config import setup_logging
+from src.analyzer import STOCK_NAME_MAP
 
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ def parse_arguments() -> argparse.Namespace:
   python main.py --single-notify    # 启用单股推送模式（每分析完一只立即推送）
   python main.py --schedule         # 启用定时任务模式
   python main.py --market-review    # 仅运行大盘复盘
+  python main.py --premarket        # 盘前选股模式（从候选池自动选股）
         """,
     )
 
@@ -152,6 +154,34 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument(
         "--no-context-snapshot", action="store_true", help="不保存分析上下文快照"
+    )
+
+    # === Premarket Selection ===
+    parser.add_argument(
+        "--premarket",
+        action="store_true",
+        help="盘前选股模式：从候选池自动筛选股票，适合盘前推送",
+    )
+
+    parser.add_argument(
+        "--selection-top-n",
+        type=int,
+        default=None,
+        help="盘前选股数量（覆盖配置 SELECTION_TOP_N）",
+    )
+
+    parser.add_argument(
+        "--selection-strategies",
+        type=str,
+        default=None,
+        help="选股策略（逗号分隔，覆盖配置 SELECTION_STRATEGIES）",
+    )
+
+    parser.add_argument(
+        "--candidate-pool",
+        type=str,
+        default=None,
+        help="候选股票池（逗号分隔，覆盖配置 CANDIDATE_POOL）",
     )
 
     # === Backtest ===
@@ -579,6 +609,57 @@ def main() -> int:
                 f"回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
                 f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
             )
+            return 0
+
+        # 模式0.5: 盘前选股
+        if getattr(args, "premarket", False):
+            logger.info("模式: 盘前选股")
+            from src.stock_selector import run_premarket_selection
+            from data_provider.base import canonical_stock_code
+
+            # 解析候选池（命令行优先，其次配置）
+            candidate_pool = None
+            if getattr(args, "candidate_pool", None):
+                candidate_pool = [
+                    canonical_stock_code(c)
+                    for c in args.candidate_pool.split(",")
+                    if c.strip()
+                ]
+                logger.info(f"使用命令行指定的候选池: {len(candidate_pool)} 只")
+
+            # 选股数量和策略
+            top_n = getattr(args, "selection_top_n", None) or config.selection_top_n
+            strategies_str = getattr(args, "selection_strategies", None)
+            if strategies_str:
+                strategies = [s.strip().lower() for s in strategies_str.split(",") if s.strip()]
+            else:
+                strategies = config.selection_strategies
+
+            logger.info(f"选股数量: {top_n} 只，策略: {strategies}")
+
+            result = run_premarket_selection(
+                config=config,
+                candidate_pool=candidate_pool,
+                top_n=top_n,
+                strategies=strategies,
+                send_notification=not args.no_notify,
+                max_workers=args.workers or 5,
+            )
+
+            logger.info(
+                f"盘前选股完成: 分析 {result.total_analyzed} 只，"
+                f"推荐 {result.selected_count} 只"
+            )
+
+            if result.top_picks:
+                logger.info("\n===== 选股结果 =====")
+                for pick in result.top_picks:
+                    name = pick.name or STOCK_NAME_MAP.get(pick.code, "")
+                    logger.info(
+                        f"{pick.signal.value} {name}({pick.code}): "
+                        f"评分 {pick.score} | {', '.join(pick.reasons[:2])}"
+                    )
+
             return 0
 
         # 模式1: 仅大盘复盘

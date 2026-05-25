@@ -1,0 +1,141 @@
+name: 盘前选股
+
+on:
+  # 定时触发 - 每天北京时间 8:30 (UTC 0:30)
+  schedule:
+    - cron: '30 0 * * 1-5'     # 周一到周五，UTC 0:30 = 北京时间 8:30
+  
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: '强制运行（跳过交易日检查）'
+        required: false
+        default: false
+        type: boolean
+      top_n:
+        description: '选股数量'
+        required: false
+        default: '10'
+        type: string
+
+# 并发控制：同一时间只运行一个选股任务
+concurrency:
+  group: premarket-selection
+  cancel-in-progress: false
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: 随机延迟（避免固定时间访问）
+        run: sleep $((RANDOM % 30))  # 随机延迟0-30秒启动
+      
+      - name: 检出代码
+        uses: actions/checkout@v4
+      
+      - name: 设置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 安装依赖
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: 创建必要目录
+        run: |
+          mkdir -p data logs reports
+      
+      - name: 执行盘前选股
+        env:
+          # ==========================================
+          # AI 配置（用于技术分析）
+          # ==========================================
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}
+          
+          # ==========================================
+          # 通知渠道
+          # ==========================================
+          WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          EMAIL_SENDER: ${{ vars.EMAIL_SENDER || secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ vars.EMAIL_RECEIVERS || secrets.EMAIL_RECEIVERS }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          CUSTOM_WEBHOOK_URLS: ${{ secrets.CUSTOM_WEBHOOK_URLS }}
+          
+          # ==========================================
+          # 选股配置
+          # ==========================================
+          CANDIDATE_POOL: ${{ vars.CANDIDATE_POOL || secrets.CANDIDATE_POOL }}
+          SELECTION_TOP_N: ${{ vars.SELECTION_TOP_N || secrets.SELECTION_TOP_N || '10' }}
+          SELECTION_STRATEGIES: ${{ vars.SELECTION_STRATEGIES || secrets.SELECTION_STRATEGIES || 'technical' }}
+          
+          # ==========================================
+          # 数据源
+          # ==========================================
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          REALTIME_SOURCE_PRIORITY: ${{ vars.REALTIME_SOURCE_PRIORITY || 'tencent,akshare_sina,efinance' }}
+          
+          # ==========================================
+          # 系统配置
+          # ==========================================
+          LOG_LEVEL: INFO
+          MAX_WORKERS: '5'
+          TRADING_DAY_CHECK_ENABLED: ${{ vars.TRADING_DAY_CHECK_ENABLED || 'true' }}
+          
+        run: |
+          echo "=========================================="
+          echo "🎯 盘前选股系统"
+          echo "=========================================="
+          echo "⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
+          echo "📊 候选池: $CANDIDATE_POOL"
+          echo "🔢 选股数量: $SELECTION_TOP_N"
+          echo "📈 选股策略: $SELECTION_STRATEGIES"
+          echo ""
+          
+          # 构建命令行参数
+          EXTRA_ARGS=""
+          if [ "${{ github.event.inputs.force_run }}" = "true" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --force-run"
+            echo "⚡ 已启用强制运行模式"
+          fi
+          
+          if [ -n "${{ github.event.inputs.top_n }}" ]; then
+            EXTRA_ARGS="$EXTRA_ARGS --selection-top-n ${{ github.event.inputs.top_n }}"
+          fi
+          
+          # 执行选股
+          python main.py --premarket $EXTRA_ARGS
+      
+      - name: 上传选股报告
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: selection-reports-${{ github.run_number }}
+          path: |
+            reports/
+            logs/
+          retention-days: 30
+      
+      - name: 显示运行结果
+        if: always()
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "📊 盘前选股完成"
+          echo "=========================================="
+          if [ -f "logs/stock_analysis_$(date +%Y%m%d).log" ]; then
+            echo "📜 最近日志（最后 30 行）:"
+            tail -30 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
+          fi
